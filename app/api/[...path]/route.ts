@@ -1,4 +1,5 @@
 import { env } from 'cloudflare:workers';
+import { uploadProductImage,ImageUploadError,isCloudinaryImageUrl } from '../../../lib/store/images';
 import { getStoreUser } from '../../../lib/auth/session';
 import { database,isAdminEmail,json,orderFromRow,productFromRow } from '../../../lib/store/server';
 import { initialProducts } from '../../../lib/store/seed';
@@ -10,7 +11,7 @@ async function handler(req:Request){
  try{
  const path=new URL(req.url).pathname.replace(/^\/api\//,'').split('/');const method=req.method; const write=method!=='GET';
  if(write){const origin=req.headers.get('origin');const site=new URL(req.url);if(origin&&new URL(origin).host!==site.host)return json({error:'Request origin is not allowed'},403);if(Number(req.headers.get('content-length')||0)>9*1024*1024)return json({error:'File is too large'},413);}
- if(path[0]==='images'&&method==='GET'){if(!/^[a-zA-Z0-9.-]+$/.test(path[1]||''))return json({error:'Image not found'},404);const file=await env.BUCKET?.get(path[1]);if(!file)return json({error:'Image not found'},404);return new Response(file.body,{headers:{'Content-Type':file.httpMetadata?.contentType||'application/octet-stream','Cache-Control':'public, max-age=31536000, immutable','X-Content-Type-Options':'nosniff'}});}
+
  const user=await getStoreUser();const admin=!!user&&isAdminEmail(user.email);
  if(path[0]==='session'&&method==='GET')return json({user:user?{userId:user.userId,email:user.email,name:user.displayName,isAdmin:admin}:null});
  if(path[0]==='products'&&method==='GET'){const rows=await database().prepare('SELECT * FROM products WHERE published=1 ORDER BY updated_at DESC,id').all();return json({products:rows.results.map(productFromRow)});}
@@ -21,11 +22,11 @@ async function handler(req:Request){
   return json({ok:true});
  }
  if(path[1]==='products'&&method==='GET'){const rows=await database().prepare('SELECT * FROM products ORDER BY updated_at DESC').all();return json({products:rows.results.map(productFromRow)});}
- if(path[1]==='products'&&(method==='PUT'||method==='POST')){const p=productInput.parse(await req.json());if(path[2]&&path[2]!==p.id)return json({error:'Product identifier mismatch'},400);const existing=await database().prepare('SELECT id FROM products WHERE id=?').bind(p.id).first();if(method==='POST'&&existing)return json({error:'This product identifier is already in use'},409);if(method==='PUT'&&!existing)return json({error:'Product not found'},404);
+ if(path[1]==='products'&&(method==='PUT'||method==='POST')){const p=productInput.parse(await req.json());if([p.image,...p.gallery].some(url=>url.startsWith('https://')&&(!env.CLOUDINARY_CLOUD_NAME||!isCloudinaryImageUrl(url,env.CLOUDINARY_CLOUD_NAME))))return json({error:'Choose photos uploaded to your store Cloudinary account'},400);if(path[2]&&path[2]!==p.id)return json({error:'Product identifier mismatch'},400);const existing=await database().prepare('SELECT id FROM products WHERE id=?').bind(p.id).first();if(method==='POST'&&existing)return json({error:'This product identifier is already in use'},409);if(method==='PUT'&&!existing)return json({error:'Product not found'},404);
  const values=[p.name,p.description,p.category,p.price,p.image,JSON.stringify(p.gallery),p.colour,JSON.stringify([...new Set(p.sizes)]),p.stock,p.tag,p.published?1:0,new Date().toISOString(),p.id];
  if(method==='PUT')await database().prepare('UPDATE products SET name=?,description=?,category=?,price=?,image=?,gallery=?,colour=?,sizes=?,stock=?,tag=?,published=?,updated_at=? WHERE id=?').bind(...values).run();else await database().prepare('INSERT INTO products (name,description,category,price,image,gallery,colour,sizes,stock,tag,published,updated_at,id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(...values).run();return json({ok:true});}
  if(path[1]==='uploads'&&method==='POST'){
- if(!env.BUCKET)return json({error:'Image storage unavailable'},503);const form=await req.formData();const file=form.get('file');if(!(file instanceof File)||file.size>8*1024*1024||file.size<12)return json({error:'Choose an image smaller than 8 MB'},400);const bytes=new Uint8Array(await file.arrayBuffer());let mime='',ext='';if(bytes[0]===0xff&&bytes[1]===0xd8&&bytes[2]===0xff){mime='image/jpeg';ext='jpg';}else if([137,80,78,71,13,10,26,10].every((n,i)=>bytes[i]===n)){mime='image/png';ext='png';}else if(new TextDecoder().decode(bytes.slice(0,4))==='RIFF'&&new TextDecoder().decode(bytes.slice(8,12))==='WEBP'){mime='image/webp';ext='webp';}else return json({error:'Upload a JPEG, PNG, or WebP photo'},400);const key=`${crypto.randomUUID()}.${ext}`;await env.BUCKET.put(key,bytes,{httpMetadata:{contentType:mime}});return json({url:`/api/images/${key}`});}
+ const form=await req.formData();const file=form.get('file');if(!(file instanceof File))return json({error:'Choose a product photo'},400);const url=await uploadProductImage(file,{cloudName:env.CLOUDINARY_CLOUD_NAME,apiKey:env.CLOUDINARY_API_KEY,apiSecret:env.CLOUDINARY_API_SECRET});return json({url});}
  if(path[1]==='orders'&&method==='GET'){const rows=await database().prepare('SELECT * FROM orders ORDER BY created_at DESC LIMIT 200').all();return json({orders:rows.results.map(orderFromRow)});}
  if(path[1]==='orders'&&path[2]&&method==='PATCH'){const data=z.object({status:z.enum(['payment_preview','cancelled'])}).parse(await req.json());const r=await database().prepare('UPDATE orders SET status=? WHERE id=?').bind(data.status,path[2]).run();return r.meta.changes?json({ok:true}):json({error:'Order not found'},404);}
  return json({error:'Not found'},404);
@@ -45,6 +46,6 @@ async function handler(req:Request){
  const id=crypto.randomUUID(),reference=`HS-${crypto.randomUUID().slice(0,8).toUpperCase()}`;await database().prepare('INSERT OR IGNORE INTO orders (id,user_id,reference,customer_name,email,address,items,total,status,payment_status,request_key,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').bind(id,user.userId,reference,input.name,input.email,input.address,JSON.stringify(items),total,'payment_preview','not_charged',requestKey,new Date().toISOString()).run();const saved=await database().prepare('SELECT * FROM orders WHERE request_key=?').bind(requestKey).first();return json({order:orderFromRow(saved)},201);}
  }
  return json({error:'Not found'},404);
- }catch(error){if(error instanceof z.ZodError)return json({error:error.issues[0]?.message||'Check the entered details'},400);if(error instanceof SyntaxError)return json({error:'Invalid request data'},400);console.error('Store request failed',error);return json({error:'We could not complete this request. Please try again.'},500);}
+ }catch(error){if(error instanceof ImageUploadError)return json({error:error.message},error.status);if(error instanceof z.ZodError)return json({error:error.issues[0]?.message||'Check the entered details'},400);if(error instanceof SyntaxError)return json({error:'Invalid request data'},400);console.error('Store request failed',error);return json({error:'We could not complete this request. Please try again.'},500);}
 }
 export const GET=handler;export const POST=handler;export const PUT=handler;export const PATCH=handler;

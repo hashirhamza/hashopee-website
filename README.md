@@ -1,6 +1,6 @@
 # HaShopee
 
-A responsive React + TypeScript fashion and essentials store, ready for independent Cloudflare deployment after configuring its database, image bucket, and Google OAuth credentials.
+A responsive React + TypeScript fashion and essentials store, ready for independent Cloudflare deployment after configuring its database, photo storage, and Google OAuth credentials.
 
 ## Included
 
@@ -15,7 +15,7 @@ A responsive React + TypeScript fashion and essentials store, ready for independ
 ## Deployment prerequisites
 
 1. Create a D1 database named `hashopee-store`. Replace the placeholder `database_id` in `wrangler.jsonc` with the actual database UUID.
-2. Create an R2 bucket named `hashopee-products`. R2 account activation is managed in Cloudflare; review its subscription/billing requirements before enabling it.
+2. Create a Cloudinary **Image & Video API Free** account. No R2 subscription is required. Keep within the Free plan usage allowance; this setup does not require a paid Cloudinary plan.
 3. Connect this GitHub branch in Cloudflare Workers Builds. Use Worker name `hashopee-website`, build command `npm run build`, and deploy command `npm run deploy`. Use Node.js 24 or later for tests (Node.js 22.13+ for the runtime toolchain).
 4. The deploy command applies pending schema migrations before uploading the Worker. Its deployment credential must have D1 edit permission in addition to Worker deployment permission. A fresh database uses both migrations in `drizzle/`.
 5. Set the runtime variables and secrets listed below, then redeploy. Google login remains unavailable until these are configured.
@@ -33,8 +33,15 @@ Set values in Cloudflare **Worker → Settings → Variables and Secrets**:
 | `GOOGLE_CLIENT_SECRET` | Secret | Google OAuth client secret |
 | `AUTH_ORIGIN` | Variable | Exact HTTPS origin of the deployed store, without a trailing slash |
 | `ADMIN_EMAILS` | Secret | Exact verified Google email address(es) authorized to manage products, comma-separated |
+| `CLOUDINARY_CLOUD_NAME` | Variable | Cloud name from your Cloudinary product environment |
+| `CLOUDINARY_API_KEY` | Secret | API key from Cloudinary settings |
+| `CLOUDINARY_API_SECRET` | Secret | API secret from Cloudinary settings |
 
-Keep actual secrets out of GitHub, screenshots, and chat messages. `DB` and `BUCKET` are resource bindings declared in `wrangler.jsonc`, not secret keys.
+Dashboard runtime values are preserved across deployments with `keep_vars`. Keep actual secrets out of GitHub, screenshots, and chat messages. `DB` is the D1 resource binding declared in `wrangler.jsonc`. Product uploads are authenticated server-to-server with Cloudinary; no unsigned upload preset or public upload secret is used.
+
+## Cloudinary photo setup
+
+Create the Image & Video API Free account, then find the cloud name and API credentials in its console. Enter the values directly in Cloudflare Worker runtime settings; never post secrets in chat or commit them to GitHub. Only signed-in administrators can use the store upload endpoint. The backend checks file signatures and an 8 MB limit, then uploads JPEG/PNG/WebP photos to the `hashopee` public-ID prefix. Product records store the HTTPS delivery URL, and browsers load photos directly from Cloudinary's CDN. Upload credentials stay on the server. Public image delivery is appropriate for catalog photographs; do not use this endpoint for confidential documents.
 
 ## Google login setup
 
@@ -63,7 +70,7 @@ npm run typecheck
 npm run build
 ```
 
-`npm run deploy:check` intentionally fails while the D1 placeholder is present. The application can build before provisioning, but it should not be deployed until its real database and image bucket are available.
+`npm run deploy:check` intentionally fails while the D1 placeholder is present. The application can build before provisioning, but it should not be deployed until its real database and photo storage are available.
 
 ## Project structure
 
