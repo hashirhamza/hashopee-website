@@ -14,7 +14,17 @@ export async function uploadProductImage(file:File,config:CloudinaryConfig,fetch
  form.set('file',new File([file],`product.${extension}`,{type:mime}));form.set('public_id',publicId);form.set('overwrite','false');
  let response:Response;
  try{response=await fetcher(`https://api.cloudinary.com/v1_1/${config.cloudName}/image/upload`,{method:'POST',headers:{Authorization:`Basic ${btoa(`${config.apiKey}:${config.apiSecret}`)}`},body:form,signal:AbortSignal.timeout(30000)});}catch{throw new ImageUploadError('Image storage could not be reached. Please try again.',502);}
- if(!response.ok)throw new ImageUploadError('The image could not be uploaded. Check photo-storage settings and usage, then try again.',502);
+ if(!response.ok){
+  const guidance:Record<number,string>={
+   400:'Cloudinary rejected the upload request (400). Check the cloud name and image upload settings.',
+   401:'Cloudinary could not authenticate the upload (401). In Cloudflare, replace CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET with values from the same active Cloudinary key pair.',
+   403:'Cloudinary refused this upload (403). Check the API key permissions and account restrictions.',
+   404:'Cloudinary could not find the upload endpoint (404). Check CLOUDINARY_CLOUD_NAME in Cloudflare.',
+   420:'Cloudinary usage limit reached (420). Check your Cloudinary usage dashboard.',
+   429:'Cloudinary is receiving too many requests (429). Wait a moment and try again.'
+  };
+  throw new ImageUploadError(guidance[response.status]||`Cloudinary could not complete the upload (HTTP ${response.status}). Try again, or check the Cloudinary account status.`,502);
+ }
  let data:any;try{data=await response.json();}catch{throw new ImageUploadError('Image storage returned an invalid response. Please try again.',502);}
  if(typeof data.secure_url!=='string'||data.public_id!==publicId||!isCloudinaryImageUrl(data.secure_url,config.cloudName))throw new ImageUploadError('Image storage returned an unexpected photo URL. Please try again.',502);
  return data.secure_url;
