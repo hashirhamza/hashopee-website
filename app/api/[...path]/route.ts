@@ -41,6 +41,15 @@ async function handler(req:Request){
  if(method==='PUT'){const {ids}=z.object({ids:z.array(z.string().max(80)).max(200)}).parse(await req.json());await database().prepare('INSERT INTO wishlists (user_id,product_ids) VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET product_ids=excluded.product_ids').bind(user.userId,JSON.stringify([...new Set(ids)])).run();return json({ok:true});}
  }
  if(path[0]==='orders'){
+ if(path.length===2&&path[1]&&method==='PATCH'){
+  z.object({status:z.literal('cancelled')}).strict().parse(await req.json());
+  // Ownership and cancellation eligibility are enforced atomically, not supplied by the client.
+  await database().prepare("UPDATE orders SET status='cancelled' WHERE id=? AND user_id=? AND status='payment_preview' AND payment_status='not_charged'").bind(path[1],user.userId).run();
+  const row=await database().prepare('SELECT * FROM orders WHERE id=? AND user_id=?').bind(path[1],user.userId).first();
+  if(!row)return json({error:'Order not found'},404);
+  if(row.status!=='cancelled')return json({error:'This order cannot be cancelled online. Please contact the store.'},409);
+  return json({order:orderFromRow(row)});
+ }
  if(method==='GET'){const rows=await database().prepare('SELECT * FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT 100').bind(user.userId).all();return json({orders:rows.results.map(orderFromRow)});}
  if(method==='POST'){const input=orderInput.parse(await req.json());const requestKey=`${user.userId}:${input.requestKey}`;const existing=await database().prepare('SELECT * FROM orders WHERE request_key=?').bind(requestKey).first();if(existing)return json({order:orderFromRow(existing)});const catalog=[];for(const id of [...new Set(input.items.map(i=>i.id))]){const row=await database().prepare('SELECT * FROM products WHERE id=? AND published=1').bind(id).first();if(row)catalog.push(productFromRow(row));}let priced;try{priced=priceOrder(input.items,catalog);}catch(e){return json({error:e instanceof Error?e.message:'Review your bag'},409);}const {items,total}=priced;
  const id=crypto.randomUUID(),reference=`HS-${crypto.randomUUID().slice(0,8).toUpperCase()}`;await database().prepare('INSERT OR IGNORE INTO orders (id,user_id,reference,customer_name,email,address,items,total,status,payment_status,request_key,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').bind(id,user.userId,reference,input.name,input.email,input.address,JSON.stringify(items),total,'payment_preview','not_charged',requestKey,new Date().toISOString()).run();const saved=await database().prepare('SELECT * FROM orders WHERE request_key=?').bind(requestKey).first();return json({order:orderFromRow(saved)},201);}

@@ -33,4 +33,32 @@ test('database-backed product, account, upload, and order authorization flows',a
  await t.test('invalid stock and size are rejected, and cross-origin writes are blocked',async()=>{identity=alice;const data={name:'Alice',email:'alice@example.com',address:'A sample customer address',requestKey:crypto.randomUUID(),items:[{id:product.id,size:'XXL',quantity:1}]};assert.equal((await call('orders','POST',data)).status,409);data.items=[{id:product.id,size:'M',quantity:4}];assert.equal((await call('orders','POST',data)).status,409);assert.equal((await call('wishlist','PUT',{ids:[]},{Origin:'https://attacker.test'})).status,403);});
  await t.test('only owner can upload images; signatures are validated',async()=>{const form=new FormData();form.append('file',new File(['<svg/>'],'image.svg',{type:'image/svg+xml'}));identity=alice;assert.equal((await call('admin/uploads','POST',form)).status,403);identity=admin;assert.equal((await call('admin/uploads','POST',form)).status,400);const image=new FormData();image.append('file',new File([new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,0])],'test.png',{type:'image/png'}));const uploaded=await call('admin/uploads','POST',image);assert.equal(uploaded.status,200);assert.ok(uploaded.data.url.startsWith('https://res.cloudinary.com/store-test/image/upload/'));assert.equal(uploadCalls,1);assert.ok(!JSON.stringify(uploaded.data).includes('test-secret'));});
  await t.test('customer cannot change order status; owner can cancel',async()=>{identity=alice;assert.equal((await call(`admin/orders/${order.id}`,'PATCH',{status:'cancelled'})).status,403);identity=admin;assert.equal((await call(`admin/orders/${order.id}`,'PATCH',{status:'paid'})).status,400);assert.equal((await call(`admin/orders/${order.id}`,'PATCH',{status:'cancelled'})).status,200);identity=alice;assert.equal((await call('orders')).data.orders[0].status,'cancelled');});
+ let cancelTarget;
+ await t.test('customer cancellation requires sign-in, ownership, same origin, and a cancellation-only payload',async()=>{
+  identity=alice;const created=await call('orders','POST',{name:'Alice',email:'alice@example.com',address:'A sample customer address',requestKey:crypto.randomUUID(),items:[{id:product.id,size:'M',quantity:1}]});assert.equal(created.status,201);cancelTarget=created.data.order;
+  identity=null;assert.equal((await call(`orders/${cancelTarget.id}`,'PATCH',{status:'cancelled'})).status,401);
+  identity=bob;assert.equal((await call(`orders/${cancelTarget.id}`,'PATCH',{status:'cancelled'})).status,404);
+  identity=alice;assert.equal((await call('orders/missing-order','PATCH',{status:'cancelled'})).status,404);
+  assert.equal((await call(`orders/${cancelTarget.id}`,'PATCH',{status:'cancelled'},{Origin:'https://attacker.test'})).status,403);
+  assert.equal((await call(`orders/${cancelTarget.id}`,'PATCH',{status:'paid'})).status,400);
+  assert.equal((await call(`orders/${cancelTarget.id}`,'PATCH',{status:'cancelled',user_id:'bob'})).status,400);
+  assert.equal(sqlite.prepare('SELECT status FROM orders WHERE id=?').get(cancelTarget.id).status,'payment_preview');
+ });
+ await t.test('paid and non-preview orders cannot be cancelled by customers',async()=>{
+  identity=alice;sqlite.prepare("UPDATE orders SET payment_status='paid' WHERE id=?").run(cancelTarget.id);
+  assert.equal((await call(`orders/${cancelTarget.id}`,'PATCH',{status:'cancelled'})).status,409);
+  assert.equal(sqlite.prepare('SELECT status FROM orders WHERE id=?').get(cancelTarget.id).status,'payment_preview');
+  sqlite.prepare("UPDATE orders SET payment_status='not_charged',status='shipped' WHERE id=?").run(cancelTarget.id);
+  assert.equal((await call(`orders/${cancelTarget.id}`,'PATCH',{status:'cancelled'})).status,409);
+  assert.equal(sqlite.prepare('SELECT status FROM orders WHERE id=?').get(cancelTarget.id).status,'shipped');
+  sqlite.prepare("UPDATE orders SET status='payment_preview' WHERE id=?").run(cancelTarget.id);
+ });
+ await t.test('customers can cancel their own unpaid previews idempotently and the admin sees the saved status',async()=>{
+  identity=alice;const before=sqlite.prepare('SELECT stock FROM products WHERE id=?').get(product.id).stock;
+  const cancelled=await call(`orders/${cancelTarget.id}`,'PATCH',{status:'cancelled'});assert.equal(cancelled.status,200);assert.equal(cancelled.data.order.status,'cancelled');assert.equal(cancelled.data.order.paymentStatus,'not_charged');assert.equal(cancelled.data.order.total,cancelTarget.total);
+  const retry=await call(`orders/${cancelTarget.id}`,'PATCH',{status:'cancelled'});assert.equal(retry.status,200);assert.equal(retry.data.order.id,cancelTarget.id);
+  assert.equal((await call('orders')).data.orders.find(o=>o.id===cancelTarget.id).status,'cancelled');
+  assert.equal(sqlite.prepare('SELECT stock FROM products WHERE id=?').get(product.id).stock,before);
+  identity=admin;assert.equal((await call('admin/orders')).data.orders.find(o=>o.id===cancelTarget.id).status,'cancelled');
+ });
 });
