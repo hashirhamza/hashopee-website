@@ -1,0 +1,6 @@
+import Link from 'next/link';
+
+type Section={title:string;paragraphs:string[]};
+export default function InformationPage({title,intro,sections}:{title:string;intro:string;sections:Section[]}){
+ return <div className="information-page"><header className="workspace-header"><Link className="wordmark" href="/">HaShopee</Link><Link className="back-link" href="/">← Back to the collection</Link></header><main className="information-content"><p className="eyebrow">THE DETAILS, CONSIDERED</p><h1>{title}</h1><p className="information-date">Last updated: 7 November 2026</p><p className="information-intro">{intro}</p>{sections.map(section=><section key={section.title}><h2>{section.title}</h2>{section.paragraphs.map((paragraph,i)=><p key={i}>{paragraph}</p>)}</section>)}<section><h2>Contact</h2><p>HaShopee is operated by Hashir Hamza. For questions or account-data requests, email <a href="mailto:hashirhamza939@gmail.com">hashirhamza939@gmail.com</a>. Send requests from your account email where possible; we may need to confirm ownership before acting.</p></section><nav className="information-links" aria-label="Store information"><Link href="/privacy">Privacy policy</Link><Link href="/terms">Terms of use</Link><Link href="/">The collection</Link></nav></main></div>;
+}
