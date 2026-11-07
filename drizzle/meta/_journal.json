@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1793959384069,
+      "tag": "0000_minor_thunderball",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1793965677568,
+      "tag": "0001_rare_maria_hill",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794037314610,
+      "tag": "0002_order_payment_method",
+      "breakpoints": true
+    }
+  ]
+}

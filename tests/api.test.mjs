@@ -1,0 +1,80 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import { SourceTextModule,SyntheticModule,createContext } from 'node:vm';
+import { build } from 'esbuild';
+const sqlite=new DatabaseSync(':memory:');
+sqlite.exec(readFileSync('drizzle/0000_minor_thunderball.sql','utf8'));
+sqlite.exec(readFileSync('drizzle/0001_rare_maria_hill.sql','utf8'));
+sqlite.exec(readFileSync('drizzle/0002_order_payment_method.sql','utf8'));
+function prepare(sql){let args=[];return {bind(...values){args=values;return this;},async first(){return sqlite.prepare(sql).get(...args)||null;},async all(){return {results:sqlite.prepare(sql).all(...args)};},async run(){const r=sqlite.prepare(sql).run(...args);return {meta:{changes:Number(r.changes)}};}};}
+let uploadCalls=0;
+const env={CLOUDINARY_CLOUD_NAME:'store-test',CLOUDINARY_API_KEY:'test-key',CLOUDINARY_API_SECRET:'test-secret',ADMIN_EMAILS:'owner@example.com',DB:{prepare,async batch(statements){sqlite.exec('BEGIN');try{const result=[];for(const stmt of statements)result.push(await stmt.run());sqlite.exec('COMMIT');return result;}catch(e){sqlite.exec('ROLLBACK');throw e;}}}};
+async function fakeFetch(url,options){assert.equal(url,'https://api.cloudinary.com/v1_1/store-test/image/upload');assert.equal(options.body.get('api_key'),'test-key');assert.match(options.body.get('signature'),/^[a-f0-9]{64}$/);assert.equal(options.body.get('api_secret'),null);uploadCalls++;const publicId=options.body.get('public_id');return Response.json({public_id:publicId,secure_url:`https://res.cloudinary.com/store-test/image/upload/v1/${publicId}.png`});}
+let identity=null;let activeHeaders=new Headers();
+const context=createContext({console,btoa,AbortSignal,fetch:fakeFetch,Request,Response,FormData,File,TextDecoder,TextEncoder,Uint8Array,crypto,URL});
+const bundled=await build({entryPoints:['app/api/[...path]/route.ts'],bundle:true,write:false,platform:'node',format:'esm',external:['cloudflare:workers','next/headers','next/navigation']});
+const module=new SourceTextModule(bundled.outputFiles[0].text,{context});
+await module.link(async specifier=>{
+ let values;if(specifier==='cloudflare:workers')values={env};else if(specifier==='next/headers')values={headers:async()=>activeHeaders};else if(specifier==='next/navigation')values={redirect:()=>{throw new Error('Unexpected redirect');}};else throw new Error(`Unexpected import: ${specifier}`);
+ return new SyntheticModule(Object.keys(values),function(){for(const [k,v]of Object.entries(values))this.setExport(k,v);},{context});
+});await module.evaluate();
+const api=module.namespace;
+async function call(path,method='GET',body,headers={}){activeHeaders=new Headers();if(identity){const token=Buffer.from('test-session-for-'+identity.id+'-with-enough-entropy').toString('base64url');const hash=Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(token))).toString('hex');sqlite.prepare('INSERT OR REPLACE INTO auth_sessions (token_hash,user_id,email,name,expires_at) VALUES (?,?,?,?,?)').run(hash,identity.id,identity.email,identity.id,Date.now()+60000);activeHeaders.set('cookie','__Host-hashopee-session='+token);}for(const [key,value]of Object.entries(headers))activeHeaders.set(key,value);const request=new Request(`https://store.test/api/${path}`,{method,headers:{...(body instanceof FormData?{}:{'Content-Type':'application/json'}),...headers},...(body!==undefined?{body:body instanceof FormData?body:JSON.stringify(body)}:{})});const response=await api[method](request);const contentType=response.headers.get('content-type')||'';return {status:response.status,data:contentType.includes('json')?await response.json():await response.arrayBuffer()};}
+const product={id:'linen-shirt',name:'Linen Shirt',description:'A relaxed linen shirt.',category:'Shirts',price:1299,image:'/image/products/shirt1.jpg',gallery:[],colour:'Ivory',sizes:['S','M'],stock:3,published:true,tag:''};
+const admin={id:'owner',email:'owner@example.com'},alice={id:'alice',email:'alice@example.com'},bob={id:'bob',email:'bob@example.com'};
+test('database-backed product, account, upload, and order authorization flows',async t=>{
+ await t.test('unverified identity headers grant no access',async()=>{identity=null;const result=await call('session','GET',undefined,{'oai-authenticated-user-id':'owner','oai-authenticated-user-email':'owner@example.com'});assert.equal(result.data.user,null);assert.equal((await call('admin/products','POST',product,{'oai-authenticated-user-id':'owner','oai-authenticated-user-email':'owner@example.com'})).status,401);});
+ await t.test('anonymous and customer identities cannot mutate the catalog',async()=>{identity=null;assert.equal((await call('admin/products','POST',product)).status,401);identity=alice;assert.equal((await call('admin/products','POST',product)).status,403);assert.equal((await call('admin/orders')).status,403);});
+ await t.test('owner can create and edit a product; published collection updates',async()=>{identity=admin;assert.equal((await call('admin/products','POST',product)).status,200);assert.equal((await call('admin/products','POST',product)).status,409);let publicList=await call('products');assert.equal(publicList.data.products[0].name,product.name);assert.equal((await call(`admin/products/${product.id}`,'PUT',{...product,published:false})).status,200);assert.equal((await call('products')).data.products.length,0);await call(`admin/products/${product.id}`,'PUT',product);});
+ await t.test('profile and wishlist records are isolated by authenticated identity',async()=>{identity=alice;assert.equal((await call('profile','PUT',{name:'Alice',email:'alice@example.com',address:'A sample customer address'})).status,200);await call('wishlist','PUT',{ids:[product.id]});identity=bob;assert.equal((await call('profile')).data.profile.email,'bob@example.com');assert.equal((await call('wishlist')).data.ids.length,0);identity=alice;assert.equal((await call('profile')).data.profile.name,'Alice');assert.equal((await call('wishlist')).data.ids[0],product.id);});
+ let order;
+ await t.test('orders use server prices, persist snapshots, and are idempotent',async()=>{identity=alice;const request={name:'Alice',email:'alice@example.com',address:'A sample customer address',requestKey:crypto.randomUUID(),items:[{id:product.id,size:'M',quantity:2,price:1}],total:2};const first=await call('orders','POST',request);assert.equal(first.status,201);assert.equal(first.data.order.total,2598);assert.equal(first.data.order.paymentStatus,'not_charged');assert.equal(first.data.order.paymentMethod,'preview');order=first.data.order;const retry=await call('orders','POST',request);assert.equal(retry.data.order.id,order.id);assert.equal((await call('orders')).data.orders.length,1);identity=bob;assert.equal((await call('orders')).data.orders.length,0);const separate=await call('orders','POST',request);assert.notEqual(separate.data.order.id,order.id);identity=admin;await call(`admin/products/${product.id}`,'PUT',{...product,price:1599});identity=alice;assert.equal((await call('orders')).data.orders[0].total,2598);});
+ await t.test('invalid stock and size are rejected, and cross-origin writes are blocked',async()=>{identity=alice;const data={name:'Alice',email:'alice@example.com',address:'A sample customer address',requestKey:crypto.randomUUID(),items:[{id:product.id,size:'XXL',quantity:1}]};assert.equal((await call('orders','POST',data)).status,409);data.items=[{id:product.id,size:'M',quantity:4}];assert.equal((await call('orders','POST',data)).status,409);assert.equal((await call('wishlist','PUT',{ids:[]},{Origin:'https://attacker.test'})).status,403);});
+ await t.test('only owner can upload images; signatures are validated',async()=>{const form=new FormData();form.append('file',new File(['<svg/>'],'image.svg',{type:'image/svg+xml'}));identity=alice;assert.equal((await call('admin/uploads','POST',form)).status,403);identity=admin;assert.equal((await call('admin/uploads','POST',form)).status,400);const image=new FormData();image.append('file',new File([new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,0])],'test.png',{type:'image/png'}));const uploaded=await call('admin/uploads','POST',image);assert.equal(uploaded.status,200);assert.ok(uploaded.data.url.startsWith('https://res.cloudinary.com/store-test/image/upload/'));assert.equal(uploadCalls,1);assert.ok(!JSON.stringify(uploaded.data).includes('test-secret'));});
+ await t.test('customer cannot change order status; owner can cancel',async()=>{identity=alice;assert.equal((await call(`admin/orders/${order.id}`,'PATCH',{status:'cancelled'})).status,403);identity=admin;assert.equal((await call(`admin/orders/${order.id}`,'PATCH',{status:'paid'})).status,400);assert.equal((await call(`admin/orders/${order.id}`,'PATCH',{status:'cancelled'})).status,200);identity=alice;assert.equal((await call('orders')).data.orders[0].status,'cancelled');});
+ await t.test('COD previews store the selected method without charging or reducing stock, and reject online payments',async()=>{
+  identity=alice;const stock=sqlite.prepare('SELECT stock FROM products WHERE id=?').get(product.id).stock;
+  const request={name:'Alice',email:'alice@example.com',address:'A sample customer address',requestKey:crypto.randomUUID(),paymentMethod:'cod',paymentStatus:'paid',items:[{id:product.id,size:'M',quantity:1}]};
+  const result=await call('orders','POST',request);assert.equal(result.status,201);const saved=result.data.order;assert.equal(saved.paymentMethod,'cod');assert.equal(saved.paymentStatus,'not_charged');assert.equal(saved.status,'payment_preview');
+  const retry=await call('orders','POST',request);assert.equal(retry.data.order.id,saved.id);assert.equal(retry.data.order.paymentMethod,'cod');
+  assert.equal((await call('orders')).data.orders.find(o=>o.id===saved.id).paymentMethod,'cod');
+  const countBefore=sqlite.prepare('SELECT COUNT(*) AS count FROM orders').get().count;
+  const rejected=await call('orders','POST',{...request,requestKey:crypto.randomUUID(),paymentMethod:'online'});assert.equal(rejected.status,400);assert.match(rejected.data.error,/Online payment is currently unavailable/);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM orders').get().count,countBefore);
+  assert.equal(sqlite.prepare('SELECT stock FROM products WHERE id=?').get(product.id).stock,stock);
+  assert.equal((await call(`orders/${saved.id}`,'PATCH',{status:'cancelled'})).data.order.paymentMethod,'cod');
+  identity=admin;const adminOrder=(await call('admin/orders')).data.orders.find(o=>o.id===saved.id);assert.equal(adminOrder.paymentMethod,'cod');assert.equal(adminOrder.status,'cancelled');
+ });
+ let cancelTarget;
+ await t.test('customer cancellation requires sign-in, ownership, same origin, and a cancellation-only payload',async()=>{
+  identity=alice;const created=await call('orders','POST',{name:'Alice',email:'alice@example.com',address:'A sample customer address',requestKey:crypto.randomUUID(),items:[{id:product.id,size:'M',quantity:1}]});assert.equal(created.status,201);cancelTarget=created.data.order;
+  identity=null;assert.equal((await call(`orders/${cancelTarget.id}`,'PATCH',{status:'cancelled'})).status,401);
+  identity=bob;assert.equal((await call(`orders/${cancelTarget.id}`,'PATCH',{status:'cancelled'})).status,404);
+  identity=alice;assert.equal((await call('orders/missing-order','PATCH',{status:'cancelled'})).status,404);
+  assert.equal((await call(`orders/${cancelTarget.id}`,'PATCH',{status:'cancelled'},{Origin:'https://attacker.test'})).status,403);
+  assert.equal((await call(`orders/${cancelTarget.id}`,'PATCH',{status:'paid'})).status,400);
+  assert.equal((await call(`orders/${cancelTarget.id}`,'PATCH',{status:'cancelled',user_id:'bob'})).status,400);
+  assert.equal(sqlite.prepare('SELECT status FROM orders WHERE id=?').get(cancelTarget.id).status,'payment_preview');
+ });
+ await t.test('paid and non-preview orders cannot be cancelled by customers',async()=>{
+  identity=alice;sqlite.prepare("UPDATE orders SET payment_status='paid' WHERE id=?").run(cancelTarget.id);
+  assert.equal((await call(`orders/${cancelTarget.id}`,'PATCH',{status:'cancelled'})).status,409);
+  assert.equal(sqlite.prepare('SELECT status FROM orders WHERE id=?').get(cancelTarget.id).status,'payment_preview');
+  sqlite.prepare("UPDATE orders SET payment_status='not_charged',status='shipped' WHERE id=?").run(cancelTarget.id);
+  assert.equal((await call(`orders/${cancelTarget.id}`,'PATCH',{status:'cancelled'})).status,409);
+  assert.equal(sqlite.prepare('SELECT status FROM orders WHERE id=?').get(cancelTarget.id).status,'shipped');
+  sqlite.prepare("UPDATE orders SET status='payment_preview' WHERE id=?").run(cancelTarget.id);
+ });
+ await t.test('customers can cancel their own unpaid previews idempotently and the admin sees the saved status',async()=>{
+  identity=alice;const before=sqlite.prepare('SELECT stock FROM products WHERE id=?').get(product.id).stock;
+  const cancelled=await call(`orders/${cancelTarget.id}`,'PATCH',{status:'cancelled'});assert.equal(cancelled.status,200);assert.equal(cancelled.data.order.status,'cancelled');assert.equal(cancelled.data.order.paymentStatus,'not_charged');assert.equal(cancelled.data.order.total,cancelTarget.total);
+  const retry=await call(`orders/${cancelTarget.id}`,'PATCH',{status:'cancelled'});assert.equal(retry.status,200);assert.equal(retry.data.order.id,cancelTarget.id);
+  assert.equal((await call('orders')).data.orders.find(o=>o.id===cancelTarget.id).status,'cancelled');
+  assert.equal(sqlite.prepare('SELECT stock FROM products WHERE id=?').get(product.id).stock,before);
+  identity=admin;assert.equal((await call('admin/orders')).data.orders.find(o=>o.id===cancelTarget.id).status,'cancelled');
+ });
+});
+
+test('payment method migration preserves historical order details',()=>{const oldDb=new DatabaseSync(':memory:');try{oldDb.exec(readFileSync('drizzle/0000_minor_thunderball.sql','utf8'));oldDb.prepare('INSERT INTO orders (id,user_id,reference,customer_name,email,address,items,total,status,payment_status,request_key,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run('legacy','alice','HS-LEGACY','Alice','alice@example.com','Sample address','[]',1299,'payment_preview','not_charged','legacy-request','2026-11-01');oldDb.exec(readFileSync('drizzle/0002_order_payment_method.sql','utf8'));const row=oldDb.prepare('SELECT * FROM orders WHERE id=?').get('legacy');assert.equal(row.payment_method,'preview');assert.equal(row.total,1299);assert.equal(row.status,'payment_preview');assert.equal(row.reference,'HS-LEGACY');}finally{oldDb.close();}});

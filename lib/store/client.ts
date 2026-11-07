@@ -1,0 +1,2 @@
+export async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{const response=await fetch(`/api/${path}`,{...options,headers:{...(options.body instanceof FormData?{}:{'Content-Type':'application/json'}),...options.headers}});let data:any;try{data=await response.json();}catch{throw new Error('The store is temporarily unavailable. Please try again.');}if(!response.ok)throw new Error(data.error||'Something went wrong');return data;}
+export const send=(method:string,data:unknown):RequestInit=>({method,body:JSON.stringify(data)});
