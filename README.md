@@ -37,7 +37,7 @@ Set values in Cloudflare **Worker → Settings → Variables and Secrets**:
 | `CLOUDINARY_API_KEY` | Secret | API key from Cloudinary settings |
 | `CLOUDINARY_API_SECRET` | Secret | API secret from Cloudinary settings |
 
-Dashboard runtime values are preserved across deployments with `keep_vars`. Keep actual secrets out of GitHub, screenshots, and chat messages. `DB` is the D1 resource binding declared in `wrangler.jsonc`. Product uploads are authenticated server-to-server with Cloudinary; no unsigned upload preset or public upload secret is used.
+Dashboard runtime values are preserved across deployments with `keep_vars`. Keep actual secrets out of GitHub, screenshots, and chat messages. `DB` is the D1 resource binding declared in `wrangler.jsonc`. Product uploads are authenticated server-to-server with Cloudinary using timestamped SHA-256 signatures; no unsigned upload preset or public upload secret is used.
 
 ## Cloudinary photo setup
 

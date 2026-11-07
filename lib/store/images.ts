@@ -12,8 +12,13 @@ export async function uploadProductImage(file:File,config:CloudinaryConfig,fetch
  else throw new ImageUploadError('Upload a JPEG, PNG, or WebP photo');
  const publicId=`hashopee/${crypto.randomUUID()}`;const form=new FormData();
  form.set('file',new File([file],`product.${extension}`,{type:mime}));form.set('public_id',publicId);form.set('overwrite','false');
+ const timestamp=String(Math.floor(Date.now()/1000));
+ const payload=`overwrite=false&public_id=${publicId}&timestamp=${timestamp}${config.apiSecret}`;
+ const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(payload));
+ const signature=Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join('');
+ form.set('timestamp',timestamp);form.set('api_key',config.apiKey!);form.set('signature',signature);
  let response:Response;
- try{response=await fetcher(`https://api.cloudinary.com/v1_1/${config.cloudName}/image/upload`,{method:'POST',headers:{Authorization:`Basic ${btoa(`${config.apiKey}:${config.apiSecret}`)}`},body:form,signal:AbortSignal.timeout(30000)});}catch{throw new ImageUploadError('Image storage could not be reached. Please try again.',502);}
+ try{response=await fetcher(`https://api.cloudinary.com/v1_1/${config.cloudName}/image/upload`,{method:'POST',body:form,signal:AbortSignal.timeout(30000)});}catch{throw new ImageUploadError('Image storage could not be reached. Please try again.',502);}
  if(!response.ok){
   const guidance:Record<number,string>={
    400:'Cloudinary rejected the upload request (400). Check the cloud name and image upload settings.',
