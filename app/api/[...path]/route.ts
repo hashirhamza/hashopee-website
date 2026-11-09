@@ -14,17 +14,33 @@ async function handler(req:Request){
 
  const user=await getStoreUser();const admin=!!user&&isAdminEmail(user.email);
  if(path[0]==='session'&&method==='GET')return json({user:user?{userId:user.userId,email:user.email,name:user.displayName,isAdmin:admin}:null});
- if(path[0]==='products'&&method==='GET'){const rows=await database().prepare('SELECT * FROM products WHERE published=1 ORDER BY updated_at DESC,id').all();return json({products:rows.results.map(productFromRow)});}
+ if(path[0]==='products'&&method==='GET'){const rows=await database().prepare('SELECT * FROM products WHERE published=1 AND deleted_at IS NULL ORDER BY updated_at DESC,id').all();return json({products:rows.results.map(productFromRow)});}
  if(path[0]==='admin'){
  if(!admin)return json({error:user?'Administrator access required':'Please sign in'},user?403:401);
  if(path[1]==='seed'&&method==='POST'){
   await database().batch(initialProducts.map(p=>database().prepare('INSERT OR IGNORE INTO products (id,name,description,category,price,image,gallery,colour,sizes,stock,tag,published,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(p.id,p.name,p.description,p.category,p.price,p.image,JSON.stringify(p.gallery),p.colour,JSON.stringify(p.sizes),p.stock,p.tag,1,new Date().toISOString())));
   return json({ok:true});
  }
- if(path[1]==='products'&&method==='GET'){const rows=await database().prepare('SELECT * FROM products ORDER BY updated_at DESC').all();return json({products:rows.results.map(productFromRow)});}
- if(path[1]==='products'&&(method==='PUT'||method==='POST')){const p=productInput.parse(await req.json());if([p.image,...p.gallery].some(url=>url.startsWith('https://')&&(!env.CLOUDINARY_CLOUD_NAME||!isCloudinaryImageUrl(url,env.CLOUDINARY_CLOUD_NAME))))return json({error:'Choose photos uploaded to your store Cloudinary account'},400);if(path[2]&&path[2]!==p.id)return json({error:'Product identifier mismatch'},400);const existing=await database().prepare('SELECT id FROM products WHERE id=?').bind(p.id).first();if(method==='POST'&&existing)return json({error:'This product identifier is already in use'},409);if(method==='PUT'&&!existing)return json({error:'Product not found'},404);
- const values=[p.name,p.description,p.category,p.price,p.image,JSON.stringify(p.gallery),p.colour,JSON.stringify([...new Set(p.sizes)]),p.stock,p.tag,p.published?1:0,new Date().toISOString(),p.id];
- if(method==='PUT')await database().prepare('UPDATE products SET name=?,description=?,category=?,price=?,image=?,gallery=?,colour=?,sizes=?,stock=?,tag=?,published=?,updated_at=? WHERE id=?').bind(...values).run();else await database().prepare('INSERT INTO products (name,description,category,price,image,gallery,colour,sizes,stock,tag,published,updated_at,id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(...values).run();return json({ok:true});}
+ if(path[1]==='products'&&method==='GET'){const rows=await database().prepare('SELECT * FROM products WHERE deleted_at IS NULL ORDER BY updated_at DESC,id').all();return json({products:rows.results.map(productFromRow)});}
+ if(path.length===3&&path[1]==='products'&&method==='DELETE'){
+  const result=await database().prepare('UPDATE products SET deleted_at=?, published=0 WHERE id=? AND deleted_at IS NULL').bind(new Date().toISOString(),path[2]).run();
+  if(result.meta.changes)return json({ok:true});
+  const existing=await database().prepare('SELECT deleted_at FROM products WHERE id=?').bind(path[2]).first();
+  return existing?.deleted_at?json({ok:true}):json({error:'Product not found'},404);
+ }
+ if(path[1]==='products'&&(method==='PUT'||method==='POST')){const p=productInput.parse(await req.json());if([p.image,...p.gallery].some(url=>url.startsWith('https://')&&(!env.CLOUDINARY_CLOUD_NAME||!isCloudinaryImageUrl(url,env.CLOUDINARY_CLOUD_NAME))))return json({error:'Choose photos uploaded to your store Cloudinary account'},400);if(path[2]&&path[2]!==p.id)return json({error:'Product identifier mismatch'},400);const existing=await database().prepare('SELECT id,deleted_at,size_stock FROM products WHERE id=?').bind(p.id).first();if(method==='POST'&&existing)return json({error:'This product identifier is already in use'},409);if(method==='PUT'&&(!existing||existing.deleted_at))return json({error:'Product not found'},404);
+ if(method==='PUT'&&existing?.size_stock&&!p.sizeStock)return json({error:'Reload the product to update its size quantities.'},409);
+ const stock=p.sizeStock?p.sizeStock.reduce((total,count)=>total+count,0):p.stock;
+ const sizeStock=p.sizeStock?JSON.stringify(p.sizeStock):null;
+ const values=[p.name,p.description,p.category,p.price,p.image,JSON.stringify(p.gallery),p.colour,JSON.stringify([...new Set(p.sizes)]),stock,sizeStock,p.tag,p.published?1:0,new Date().toISOString(),p.id];
+  if(method==='PUT'){
+  const result=await database().prepare('UPDATE products SET name=?,description=?,category=?,price=?,image=?,gallery=?,colour=?,sizes=?,stock=?,size_stock=?,tag=?,published=?,updated_at=? WHERE id=? AND deleted_at IS NULL').bind(...values).run();
+  if(!result.meta.changes)return json({error:'Product not found'},404);
+ }else{
+  const result=await database().prepare('INSERT OR IGNORE INTO products (name,description,category,price,image,gallery,colour,sizes,stock,size_stock,tag,published,updated_at,id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(...values).run();
+  if(!result.meta.changes)return json({error:'This product identifier is already in use'},409);
+ }
+ return json({ok:true});}
  if(path[1]==='uploads'&&method==='POST'){
  const form=await req.formData();const file=form.get('file');if(!(file instanceof File))return json({error:'Choose a product photo'},400);const url=await uploadProductImage(file,{cloudName:env.CLOUDINARY_CLOUD_NAME,apiKey:env.CLOUDINARY_API_KEY,apiSecret:env.CLOUDINARY_API_SECRET});return json({url});}
  if(path[1]==='orders'&&method==='GET'){const rows=await database().prepare('SELECT * FROM orders ORDER BY created_at DESC LIMIT 200').all();return json({orders:rows.results.map(orderFromRow)});}
@@ -51,10 +67,10 @@ async function handler(req:Request){
   return json({order:orderFromRow(row)});
  }
  if(method==='GET'){const rows=await database().prepare('SELECT * FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT 100').bind(user.userId).all();return json({orders:rows.results.map(orderFromRow)});}
- if(method==='POST'){const input=orderInput.parse(await req.json());const requestKey=`${user.userId}:${input.requestKey}`;const existing=await database().prepare('SELECT * FROM orders WHERE request_key=?').bind(requestKey).first();if(existing)return json({order:orderFromRow(existing)});const catalog=[];for(const id of [...new Set(input.items.map(i=>i.id))]){const row=await database().prepare('SELECT * FROM products WHERE id=? AND published=1').bind(id).first();if(row)catalog.push(productFromRow(row));}let priced;try{priced=priceOrder(input.items,catalog);}catch(e){return json({error:e instanceof Error?e.message:'Review your bag'},409);}const {items,total}=priced;
+ if(method==='POST'){const input=orderInput.parse(await req.json());const requestKey=`${user.userId}:${input.requestKey}`;const existing=await database().prepare('SELECT * FROM orders WHERE request_key=?').bind(requestKey).first();if(existing)return json({order:orderFromRow(existing)});const catalog=[];for(const id of [...new Set(input.items.map(i=>i.id))]){const row=await database().prepare('SELECT * FROM products WHERE id=? AND published=1 AND deleted_at IS NULL').bind(id).first();if(row)catalog.push(productFromRow(row));}let priced;try{priced=priceOrder(input.items,catalog);}catch(e){return json({error:e instanceof Error?e.message:'Review your bag'},409);}const {items,total}=priced;
  const id=crypto.randomUUID(),reference=`HS-${crypto.randomUUID().slice(0,8).toUpperCase()}`;await database().prepare('INSERT OR IGNORE INTO orders (id,user_id,reference,customer_name,email,address,items,total,status,payment_status,payment_method,request_key,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id,user.userId,reference,input.name,input.email,input.address,JSON.stringify(items),total,'payment_preview','not_charged',input.paymentMethod,requestKey,new Date().toISOString()).run();const saved=await database().prepare('SELECT * FROM orders WHERE request_key=?').bind(requestKey).first();return json({order:orderFromRow(saved)},201);}
  }
  return json({error:'Not found'},404);
  }catch(error){if(error instanceof ImageUploadError)return json({error:error.message},error.status);if(error instanceof z.ZodError)return json({error:error.issues[0]?.message||'Check the entered details'},400);if(error instanceof SyntaxError)return json({error:'Invalid request data'},400);console.error('Store request failed',error);return json({error:'We could not complete this request. Please try again.'},500);}
 }
-export const GET=handler;export const POST=handler;export const PUT=handler;export const PATCH=handler;
+export const GET=handler;export const POST=handler;export const PUT=handler;export const PATCH=handler;export const DELETE=handler;

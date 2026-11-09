@@ -8,6 +8,7 @@ const sqlite=new DatabaseSync(':memory:');
 sqlite.exec(readFileSync('drizzle/0000_minor_thunderball.sql','utf8'));
 sqlite.exec(readFileSync('drizzle/0001_rare_maria_hill.sql','utf8'));
 sqlite.exec(readFileSync('drizzle/0002_order_payment_method.sql','utf8'));
+sqlite.exec(readFileSync('drizzle/0003_catalog_management.sql','utf8'));
 function prepare(sql){let args=[];return {bind(...values){args=values;return this;},async first(){return sqlite.prepare(sql).get(...args)||null;},async all(){return {results:sqlite.prepare(sql).all(...args)};},async run(){const r=sqlite.prepare(sql).run(...args);return {meta:{changes:Number(r.changes)}};}};}
 let uploadCalls=0;
 const env={CLOUDINARY_CLOUD_NAME:'store-test',CLOUDINARY_API_KEY:'test-key',CLOUDINARY_API_SECRET:'test-secret',ADMIN_EMAILS:'owner@example.com',DB:{prepare,async batch(statements){sqlite.exec('BEGIN');try{const result=[];for(const stmt of statements)result.push(await stmt.run());sqlite.exec('COMMIT');return result;}catch(e){sqlite.exec('ROLLBACK');throw e;}}}};
@@ -78,3 +79,37 @@ test('database-backed product, account, upload, and order authorization flows',a
 });
 
 test('payment method migration preserves historical order details',()=>{const oldDb=new DatabaseSync(':memory:');try{oldDb.exec(readFileSync('drizzle/0000_minor_thunderball.sql','utf8'));oldDb.prepare('INSERT INTO orders (id,user_id,reference,customer_name,email,address,items,total,status,payment_status,request_key,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run('legacy','alice','HS-LEGACY','Alice','alice@example.com','Sample address','[]',1299,'payment_preview','not_charged','legacy-request','2026-11-01');oldDb.exec(readFileSync('drizzle/0002_order_payment_method.sql','utf8'));const row=oldDb.prepare('SELECT * FROM orders WHERE id=?').get('legacy');assert.equal(row.payment_method,'preview');assert.equal(row.total,1299);assert.equal(row.status,'payment_preview');assert.equal(row.reference,'HS-LEGACY');}finally{oldDb.close();}});
+
+test('per-size inventory is enforced and catalog deletion preserves saved orders', async () => {
+ const shoe = {...product, id:'everyday-olive', name:'Everyday Trainers', category:'Shoes', sizes:['EU 40','EU 41'], sizeStock:[5,10], stock:99};
+ identity=admin;
+ assert.equal((await call('admin/products','POST',{...shoe,sizeStock:[5]})).status,400);
+ assert.equal((await call('admin/products','POST',shoe)).status,200);
+ const listing=(await call('products')).data.products.find(item=>item.id===shoe.id);
+ assert.equal(listing.stock,15);
+ assert.deepEqual(listing.sizeStock,[5,10]);
+ assert.equal((await call(`admin/products/${shoe.id}`,'PUT',{...shoe,sizeStock:null})).status,409);
+
+ identity=alice;
+ const order={name:'Alice',email:'alice@example.com',address:'Sample delivery address',paymentMethod:'cod'};
+ const submit=items=>call('orders','POST',{...order,requestKey:crypto.randomUUID(),items});
+ const line=(size,quantity)=>({id:shoe.id,size,quantity});
+ assert.equal((await submit([line('EU 40',3),line('EU 40',3)])).status,409);
+ const saved=await submit([line('EU 40',5),line('EU 41',10)]);
+ assert.equal(saved.status,201);
+
+ const deletePath=`admin/products/${shoe.id}`;
+ assert.equal((await call(deletePath,'DELETE')).status,403);
+ identity=admin;
+ assert.equal((await call(deletePath,'DELETE',undefined,{Origin:'https://other.test'})).status,403);
+ assert.equal((await call(deletePath,'DELETE')).status,200);
+ assert.equal((await call(deletePath,'DELETE')).status,200);
+ assert.equal((await call(deletePath,'PUT',shoe)).status,404);
+ assert.equal((await call('admin/seed','POST')).status,200);
+ assert.ok(!(await call('admin/products')).data.products.some(item=>item.id===shoe.id));
+ assert.ok(!(await call('products')).data.products.some(item=>item.id===shoe.id));
+ identity=alice;
+ assert.equal((await submit([line('EU 40',1)])).status,409);
+ const history=(await call('orders')).data.orders.find(item=>item.id===saved.data.order.id);
+ assert.deepEqual(history.items,saved.data.order.items);
+});
