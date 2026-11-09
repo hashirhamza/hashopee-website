@@ -79,3 +79,7 @@
 .product-delete-confirm p{font-size:13px;line-height:1.6;margin:8px 0 14px}
 .table-actions .product-delete{color:#963e34}
 .product-delete-confirm .product-delete-button{background:#963e34}
+
+.hero-image.hero-campaign{width:100%;max-width:500px;height:auto;min-height:0;aspect-ratio:1122/1402;align-self:start;justify-self:center}
+.hero-image.hero-campaign>img{object-fit:contain;object-position:center;filter:none}
+.hero-image.hero-campaign::after{content:none}
