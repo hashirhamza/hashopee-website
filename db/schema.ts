@@ -4,6 +4,7 @@ export const products = sqliteTable('products', {
  category: text('category').notNull(), price: integer('price').notNull(), image: text('image').notNull(),
  gallery: text('gallery').notNull().default('[]'), colour: text('colour').notNull(),
  sizes: text('sizes').notNull().default('["S","M","L","XL","XXL"]'), stock: integer('stock').notNull().default(30),
+ sizeStock: text('size_stock'), deletedAt: text('deleted_at'),
  tag: text('tag').notNull().default(''), published: integer('published').notNull().default(1), updatedAt: text('updated_at').notNull()
 });
 export const profiles = sqliteTable('profiles', { userId: text('user_id').primaryKey(), email: text('email').notNull(), name: text('name').notNull(), address: text('address').notNull().default(''), updatedAt:text('updated_at').notNull() });

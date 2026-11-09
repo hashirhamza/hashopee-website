@@ -22,6 +22,13 @@
       "when": 1794037314610,
       "tag": "0002_order_payment_method",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1794218025818,
+      "tag": "0003_catalog_management",
+      "breakpoints": true
     }
   ]
 }
