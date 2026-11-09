@@ -65,15 +65,17 @@
 
 .product-pagination{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:18px 0}
 .product-pagination p{color:#627156;font-size:12px}
-.product-pagination>div,.category-shortcuts,.product-delete-confirm>div{display:flex;gap:8px;flex-wrap:wrap}
+.product-pagination>div,.product-delete-confirm>div{display:flex;gap:8px;flex-wrap:wrap}
 .product-table-card .product-pagination{padding:16px 20px;border-top:1px solid var(--line)}
 .product-pagination button:disabled,.sizes button:disabled{opacity:.5;cursor:not-allowed}
 .sizes button:disabled{text-decoration:line-through}
-.category-shortcuts .subtle-button[aria-pressed=true]{background:#e6efdc}
 .size-stock-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .size-stock-fields label{min-width:0;overflow-wrap:anywhere}
 .stock-total{display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;font-size:13px;padding-top:10px;border-top:1px solid var(--line)}
-.product-delete-confirm{padding:20px;background:#fcf4f1;border-bottom:1px solid #eadbd4}
+.product-delete-confirm{position:fixed;inset:0;width:min(440px,calc(100% - 32px));max-height:calc(100dvh - 32px);margin:auto;padding:24px;border:1px solid #eadbd4;border-radius:20px;background:#fff;color:#242b23;box-shadow:0 24px 72px #232a2333;overflow:auto;overscroll-behavior:contain}
+.product-delete-confirm::backdrop{background:#25302055}
+.product-delete-confirm h3{font-size:20px;overflow-wrap:anywhere}
+.product-delete-confirm>div{justify-content:flex-end}
 .product-delete-confirm p{font-size:13px;line-height:1.6;margin:8px 0 14px}
 .table-actions .product-delete{color:#963e34}
 .product-delete-confirm .product-delete-button{background:#963e34}
