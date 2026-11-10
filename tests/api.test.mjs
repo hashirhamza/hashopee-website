@@ -113,3 +113,26 @@ test('per-size inventory is enforced and catalog deletion preserves saved orders
  const history=(await call('orders')).data.orders.find(item=>item.id===saved.data.order.id);
  assert.deepEqual(history.items,saved.data.order.items);
 });
+
+test('products save multiple uploaded photos and normalize a typed identifier', async () => {
+ identity = admin;
+ const photos = [];
+ for (let index = 0; index < 3; index++) {
+  const form = new FormData();
+  const png = new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,0]);
+  form.append('file', new File([png], 'product.png', {type:'image/png'}));
+  const upload = await call('admin/uploads', 'POST', form);
+  assert.equal(upload.status, 200);
+  photos.push(upload.data.url);
+ }
+ const draft = {...product, id:'HS-SHT-001', image:photos[0], gallery:[photos[1]]};
+ const invalid = await call('admin/products', 'POST', {...draft, id:'HS SHT 001'});
+ assert.equal(invalid.status, 400);
+ assert.match(invalid.data.error, /Product identifier/);
+ assert.equal((await call('admin/products', 'POST', draft)).status, 200);
+ assert.equal((await call('admin/products', 'POST', {...draft, id:'hs-sht-001'})).status, 409);
+ assert.equal((await call('admin/products/hs-sht-001', 'PUT', {...draft, gallery:photos.slice(1)})).status, 200);
+ const saved = (await call('products')).data.products.find(item => item.id === 'hs-sht-001');
+ assert.equal(saved.image, photos[0]);
+ assert.deepEqual(saved.gallery, photos.slice(1));
+});
